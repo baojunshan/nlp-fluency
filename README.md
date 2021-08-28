@@ -7,13 +7,13 @@
   
 |方法|介绍|模型|案例|
 |:---|:---|:---|:---|
-|ngrams|利用ngram计算得到下一个词的概率【单向滑窗】|[百度网盘:2unt](https://pan.baidu.com/s/1_88BXVfXXhS_2HiVZP6FWQ) （基于thucnew摘要数据集训练）； 也可以通过[train_ngramslm.py]()用其他语料训练|[案例](https://github.com/baojunshan/nlp-fluency#ngrams)|
+|ngrams|利用ngram计算得到下一个词的概率【单向滑窗】|[百度网盘:no8i](https://pan.baidu.com/s/16-4EhOIWCWxarjgGYh93bQ) （基于thucnew摘要数据集训练）； 也可以通过[train_ngramslm.py]()用其他语料训练|[案例](https://github.com/baojunshan/nlp-fluency#ngrams)|
 |gpt|利用中文gpt计算得到下一个词的概率【单向】|[百度网盘:qmzg](https://pan.baidu.com/s/1R8BRDiLfW8jzhpB3adtiTg) ； 也可以访问 [链接](https://github.com/Morizeyao/GPT2-Chinese) 获取其他gpt预训练的中文模型，或者自己训练|[案例](https://github.com/baojunshan/nlp-fluency#gpt)|
 |bert|把句子中的词mask住，然后预测得到mask词的分布，进而得到该词的概率【双向】|[百度网盘:ma3b](https://pan.baidu.com/s/18qMsM0wqL_r2j1qxohSDNA) ； 也可以访问[链接](https://github.com/ymcui/Chinese-BERT-wwm) 获取其他bert预训练的中文模型，或者自己训练|[案例](https://github.com/baojunshan/nlp-fluency#bert)|
 |albert|同bert，只是模型小了|[百度网盘:q6pb](https://pan.baidu.com/s/17GAbZ_YgFJwfZcTpTB_fBA) ； 也可以访问[链接](https://github.com/lonePatient/albert_pytorch) 获取其他albert预训练的中文模型，或者自己训练|[案例](https://github.com/baojunshan/nlp-fluency#bert)|
 
 ## 用法
-需要安装 `pickle`, `torch`, `transformers`，请自行安装即可。
+需要安装 `torch`, `transformers`，请自行安装即可。
 使用案例可见[example.py](https://github.com/baojunshan/nlp-fluency/blob/master/example.py)
 
 函数：
@@ -51,7 +51,7 @@ from models import NgramsLanguageModel
 
 start_time = time.time()
 
-model = NgramsLanguageModel.from_pretrained("./thucnews.lm")
+model = NgramsLanguageModel.from_pretrained("./thucnews_lm_model")
 
 print(f"Loading ngrams model cost {time.time() - start_time:.3f} seconds.")
 

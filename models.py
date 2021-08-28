@@ -1,8 +1,9 @@
 from abc import abstractmethod
 import math
+import os
+import json
 import pickle
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from transformers import GPT2LMHeadModel, BertForPreTraining, BertTokenizer
 from transformers import AlbertForPreTraining, AlbertConfig
@@ -72,12 +73,49 @@ class NgramsLanguageModel(ModelMixin):
 
     @staticmethod
     def from_pretrained(path, *args, **kwargs):
-        with open(path, "rb") as f:
-            return pickle.load(f)
+        if not os.path.exists(path):
+            raise ValueError(f"Did not find the path: {path}, please check.")
+
+        with open(f"{path}/config.json", "r") as f:
+            param = json.load(f)
+            self = NgramsLanguageModel(
+                ngram=int(param["ngram"]),
+                sentence_length=int(param["sentence_length"]),
+                stop_words=set(param["stop_words"])
+            )
+            self.corpus_length = int(param["corpus_length"])
+            self.token_count = int(param["token_count"])
+
+        with open(f"{path}/vocab.txt", "r") as f:
+            for i, t in enumerate(f.read().split("\n")):
+                self.token2idx[t] = i
+                self.idx2token[i] = t
+
+        with open(f"{path}/model.bin", "r") as f:
+            for line in f.readlines():
+                line = [int(i) for i in line.strip().split("\t")]
+                self.model[len(line) - 1][tuple(line[:-1])] = line[-1]
+        return self
 
     def save(self, path, *args, **kwargs):
-        with open(path, "wb") as f:
-            pickle.dump(self, f)
+        if not os.path.exists(path):
+            os.mkdir(path)
+
+        token2idx = sorted(self.token2idx.items(), key=lambda x:[1], reverse=False)
+        with open(f"{path}/vocab.txt", "w") as f:
+            f.write("\n".join([t for t, i in token2idx]))
+        with open(f"{path}/config.json", "w") as f:
+            json.dump({
+                "corpus_length": self.corpus_length,
+                "token_count": self.token_count,
+                "sentence_length": self.sentence_length,
+                "stop_words": list(self.stop_words),
+                "ngram": self.ngram,
+            }, f)
+        with open(f"{path}/model.bin", "w") as f:
+            for n in [self.ngram - 1, self.ngram]:
+                for k, v in self.model[n].items():
+                    f.write("\t".join([str(i) for i in list(k) + [v]]) + "\n")
         return self
 
     def train(self, x, *args, **kwargs):

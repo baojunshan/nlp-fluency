@@ -19,7 +19,7 @@ from models import NgramsLanguageModel
 
 start_time = time.time()
 
-model = NgramsLanguageModel.from_pretrained("./thucnews.lm")
+model = NgramsLanguageModel.from_pretrained("./thucnews_lm_model")
 
 print(f"Loading ngrams model cost {time.time() - start_time:.3f} seconds.")
 
@@ -32,6 +32,7 @@ for s in sentences:
 
 print(model.perplexity(jieba.lcut(sentences[-4]), verbose=True))
 # model.score(...) # 参数相同
+exit()
 
 
 # -----------------------------
@@ -41,45 +42,45 @@ from models import MaskedBert, MaskedAlbert
 
 # model = MaskedAlbert.from_pretrained("/home/baojunshan/data/pretrained_models/albert_base_zh")
 
-model = MaskedBert.from_pretrained(
-    path="/home/baojunshan/data/pretrained_models/chinese_bert_wwm_ext_pytorch",
-    device="cpu",  # 使用cpu或者cuda:0，default=cpu
-    sentence_length=50,  # 长句做切句处理，段落会被切成最大不超过该变量的句子集，default=50
-)
-
-for s in sentences:
-    ppl = model.perplexity(
-        x=" ".join(s),   # 每个字空格隔开或者输入一个list
-        verbose=False,     # 是否显示详细的probability，default=False
-        temperature=1.0,   # softmax的温度调节，default=1
-        batch_size=100,    # 推理时的batch size，可根据cpu或gpu而定，default=100
-    )
-    print(f"ppl: {ppl:.5f} # {s}")
-
-model.perplexity(sentences[-4], verbose=True)
-model.score(...) # 参数相同
+# model = MaskedBert.from_pretrained(
+#     path="/home/baojunshan/data/pretrained_models/chinese_bert_wwm_ext_pytorch",
+#     device="cpu",  # 使用cpu或者cuda:0，default=cpu
+#     sentence_length=50,  # 长句做切句处理，段落会被切成最大不超过该变量的句子集，default=50
+# )
+#
+# for s in sentences:
+#     ppl = model.perplexity(
+#         x=" ".join(s),   # 每个字空格隔开或者输入一个list
+#         verbose=False,     # 是否显示详细的probability，default=False
+#         temperature=1.0,   # softmax的温度调节，default=1
+#         batch_size=100,    # 推理时的batch size，可根据cpu或gpu而定，default=100
+#     )
+#     print(f"ppl: {ppl:.5f} # {s}")
+#
+# model.perplexity(sentences[-4], verbose=True)
+# model.score(...) # 参数相同
 
 # --------------------------------
 # GPT
 # --------------------------------
-from models import GPT
-
-model = GPT.from_pretrained(
-    path="/home/baojunshan/data/pretrained_models/chinese_gpt2_pytorch",
-    device="cpu",
-    sentence_length=50
-)
-
-for s in sentences:
-    ppl = model.perplexity(
-        x=" ".join(s),   # 每个字空格隔开或者输入一个list
-        verbose=False,     # 是否显示详细的probability，default=False
-        temperature=1.0,   # softmax的温度调节，default=1
-        batch_size=100,    # 推理时的batch size，可根据cpu或gpu而定，default=100
-    )
-    print(f"ppl: {ppl:.5f} # {s}")
-
-model.perplexity(sentences[-4], verbose=True)
+# from models import GPT
+#
+# model = GPT.from_pretrained(
+#     path="/home/baojunshan/data/pretrained_models/chinese_gpt2_pytorch",
+#     device="cpu",
+#     sentence_length=50
+# )
+#
+# for s in sentences:
+#     ppl = model.perplexity(
+#         x=" ".join(s),   # 每个字空格隔开或者输入一个list
+#         verbose=False,     # 是否显示详细的probability，default=False
+#         temperature=1.0,   # softmax的温度调节，default=1
+#         batch_size=100,    # 推理时的batch size，可根据cpu或gpu而定，default=100
+#     )
+#     print(f"ppl: {ppl:.5f} # {s}")
+#
+# model.perplexity(sentences[-4], verbose=True)
 
 
 
