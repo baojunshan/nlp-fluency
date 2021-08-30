@@ -177,7 +177,7 @@ l score: -9.64093376
 
 ## 引用
 ```
-@misc{GPT2-Chinese,
+@misc{nlp-fluency,
   author = {Junshan Bao},
   title = {nlp-fluency},
   year = {2021},
