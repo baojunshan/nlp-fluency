@@ -1,19 +1,21 @@
 from abc import abstractmethod
 import math
+import time
 import os
 import json
-import pickle
+from shutil import copyfile
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from transformers import GPT2LMHeadModel, BertForPreTraining, BertTokenizer
 from transformers import AlbertForPreTraining, AlbertConfig
 
 
 class ModelMixin:
-    def __init__(self, stop_words, sentence_length=50, *args, **kwargs):
+    def __init__(self, stop_words, max_len=50, *args, **kwargs):
         self.stop_words = stop_words or {".", "?", "!", "。", "？", "！"}
         self.stop_words_outer = self.stop_words | {",", "，", ";", "；"}
-        self.sentence_length = sentence_length  # 长句切割幅度， 防止bert模型太慢了
+        self.max_len = max_len  # 长句切割幅度， 防止bert模型太慢了
 
     @staticmethod
     @abstractmethod
@@ -45,10 +47,10 @@ class ModelMixin:
         for i, w in enumerate(x):
             if w in self.stop_words_outer:
                 last_outer_idx = i
-            if i - split_ids[-1] > self.sentence_length:
+            if i - split_ids[-1] > self.max_len:
                 if last_outer_idx == split_ids[-1]:
                     raise ValueError(
-                        f"Sentence `{''.join(x[last_outer_idx: i + 1])}` is longer than `sentence_length (curr={self.sentence_length})`, please set it larger.")
+                        f"Sentence `{''.join(x[last_outer_idx: i + 1])}` is longer than `sentence_length (curr={self.max_len})`, please set it larger.")
                 split_ids.append(last_outer_idx)
             elif w in self.stop_words:
                 split_ids.append(i)
@@ -62,8 +64,8 @@ class ModelMixin:
 
 
 class NgramsLanguageModel(ModelMixin):
-    def __init__(self, ngram=2, sentence_length=50, stop_words=None):
-        super(NgramsLanguageModel, self).__init__(stop_words=stop_words, sentence_length=sentence_length)
+    def __init__(self, ngram=2, max_len=50, stop_words=None):
+        super(NgramsLanguageModel, self).__init__(stop_words=stop_words, max_len=max_len)
         self.ngram = ngram
         self.model = {self.ngram: dict(), self.ngram - 1: dict()}
         self.corpus_length = 0
@@ -80,7 +82,7 @@ class NgramsLanguageModel(ModelMixin):
             param = json.load(f)
             self = NgramsLanguageModel(
                 ngram=int(param["ngram"]),
-                sentence_length=int(param["sentence_length"]),
+                max_len=int(param["max_len"]),
                 stop_words=set(param["stop_words"])
             )
             self.corpus_length = int(param["corpus_length"])
@@ -101,14 +103,14 @@ class NgramsLanguageModel(ModelMixin):
         if not os.path.exists(path):
             os.mkdir(path)
 
-        token2idx = sorted(self.token2idx.items(), key=lambda x:[1], reverse=False)
+        token2idx = sorted(self.token2idx.items(), key=lambda x: [1], reverse=False)
         with open(f"{path}/vocab.txt", "w") as f:
             f.write("\n".join([t for t, i in token2idx]))
         with open(f"{path}/config.json", "w") as f:
             json.dump({
                 "corpus_length": self.corpus_length,
                 "token_count": self.token_count,
-                "sentence_length": self.sentence_length,
+                "max_len": self.max_len,
                 "stop_words": list(self.stop_words),
                 "ngram": self.ngram,
             }, f)
@@ -171,20 +173,21 @@ class NgramsLanguageModel(ModelMixin):
 
 
 class MaskedBert(ModelMixin):
-    def __init__(self, stop_words=None, sentence_length=50, device="cpu"):
-        super(MaskedBert, self).__init__(stop_words=stop_words, sentence_length=sentence_length)
+    def __init__(self, stop_words=None, max_len=50, device="cpu"):
+        super(MaskedBert, self).__init__(stop_words=stop_words, max_len=max_len)
         self.model = None
         self.tokenizer = None
         self.mask_id = -1
         self.device = device
 
     @staticmethod
-    def from_pretrained(path, sentence_length=50, device="cpu", stop_words=None, *args, **kwargs):
+    def from_pretrained(path, max_len=50, device="cpu", stop_words=None, *args, **kwargs):
         model = BertForPreTraining.from_pretrained(path)
         tokenizer = BertTokenizer.from_pretrained(path)
-        self = MaskedBert(device=device, stop_words=stop_words, sentence_length=sentence_length)
+        self = MaskedBert(device=device, stop_words=stop_words, max_len=max_len)
         self.model = model.to(device)
         self.tokenizer = tokenizer
+        self.device = device
         self.mask_id = int(tokenizer.convert_tokens_to_ids("[MASK]"))
 
         return self
@@ -234,15 +237,11 @@ class MaskedBert(ModelMixin):
                 all_probability += probability
                 all_words += self.tokenizer.convert_ids_to_tokens(origin_ids[start: end])
 
-        if len(all_probability) == 0:
-            l_score = 0
-        else:
+        l_score = 0
+        if len(all_probability) > 0:
             l_score = sum([math.log(p, 2) for p in all_probability]) / len(all_probability)
 
         if verbose:
-            words = list()
-            for s in sentences:
-                words += s
             for word, prob in zip(all_words, all_probability):
                 print(f"{word} | {prob:.8f}")
             print(f"l score: {l_score:.8f}")
@@ -251,35 +250,37 @@ class MaskedBert(ModelMixin):
 
 
 class MaskedAlbert(MaskedBert):
-    def __init__(self, stop_words=None, sentence_length=50, device="cpu"):
-        super(MaskedAlbert, self).__init__(stop_words=stop_words, sentence_length=sentence_length, device=device)
+    def __init__(self, stop_words=None, max_len=50, device="cpu"):
+        super(MaskedAlbert, self).__init__(stop_words=stop_words, max_len=max_len, device=device)
 
     @staticmethod
-    def from_pretrained(path, stop_words=None, sentence_length=50, device="cpu", *args, **kwargs):
+    def from_pretrained(path, stop_words=None, max_len=50, device="cpu", *args, **kwargs):
         bert_config = AlbertConfig.from_pretrained(path)
         model = AlbertForPreTraining(config=bert_config)
         tokenizer = BertTokenizer.from_pretrained(path)
-        self = MaskedAlbert(device=device, sentence_length=sentence_length, stop_words=stop_words)
+        self = MaskedAlbert(device=device, max_len=max_len, stop_words=stop_words)
         self.model = model.to(device)
         self.tokenizer = tokenizer
+        self.device = device
         self.mask_id = int(tokenizer.convert_tokens_to_ids("[MASK]"))
         return self
 
 
 class GPT(ModelMixin):
-    def __init__(self, device="cpu", stop_words=None, sentence_length=50):
-        super(GPT, self).__init__(stop_words=stop_words, sentence_length=sentence_length)
+    def __init__(self, device="cpu", stop_words=None, max_len=50):
+        super(GPT, self).__init__(stop_words=stop_words, max_len=max_len)
         self.model = None
         self.tokenizer = None
         self.device = device
 
     @staticmethod
-    def from_pretrained(path, device="cpu", stop_words=None, sentence_length=50, *args, **kwargs):
+    def from_pretrained(path, device="cpu", stop_words=None, max_len=50, *args, **kwargs):
         model = GPT2LMHeadModel.from_pretrained(path)
         tokenizer = BertTokenizer.from_pretrained(path)
-        self = GPT(device=device, stop_words=stop_words, sentence_length=sentence_length)
+        self = GPT(device=device, stop_words=stop_words, max_len=max_len)
         self.model = model.to(device)
         self.tokenizer = tokenizer
+        self.device = device
         return self
 
     def save(self, path, *args, **kwargs):
@@ -307,17 +308,276 @@ class GPT(ModelMixin):
                 all_probability.append(probability)
                 all_words += self.tokenizer.convert_ids_to_tokens([origin_ids[i]])
 
-        if len(all_probability) == 0:
-            l_score = 0
-        else:
+        l_score = 0
+        if len(all_probability) > 0:
             l_score = sum([math.log(p, 2) for p in all_probability]) / len(all_probability)
         if verbose:
-            words = list()
-            for s in sentences:
-                words += s
             for word, prob in zip(all_words, all_probability):
                 print(f"{word} | {prob:.8f}")
             print(f"l score: {l_score:.8f}")
 
         return l_score
 
+
+class GatedCNN(nn.Module):
+    def __init__(self, out_dim, seq_len, kernel_shape, out_channels=32, n_layers=10, res_block_count=5):
+        super(GatedCNN, self).__init__()
+        self.res_block_count = res_block_count
+        self.seq_len = seq_len
+
+        padding_size = kernel_shape[0] // 2
+
+        self.conv_0 = nn.Conv2d(1, out_channels, kernel_shape, padding=(padding_size, 0))
+        self.bias_0 = nn.Parameter(torch.randn(1, out_channels, 1, 1))
+        self.conv_gate_0 = nn.Conv2d(1, out_channels, kernel_shape, padding=(padding_size, 0))
+        self.bias_gate_0 = nn.Parameter(torch.randn(1, out_channels, 1, 1))
+
+        self.conv = nn.ModuleList([
+            nn.Conv2d(out_channels, out_channels, (kernel_shape[0], 1), padding=(padding_size, 0)) \
+            for _ in range(n_layers)
+        ])
+        self.conv_gate = nn.ModuleList([
+            nn.Conv2d(out_channels, out_channels, (kernel_shape[0], 1), padding=(padding_size, 0)) \
+            for _ in range(n_layers)
+        ])
+        self.bias = nn.ParameterList([
+            nn.Parameter(torch.randn(1, out_channels, 1, 1)) \
+            for _ in range(n_layers)
+        ])
+        self.bias_gate = nn.ParameterList([
+            nn.Parameter(torch.randn(1, out_channels, 1, 1)) \
+            for _ in range(n_layers)
+        ])
+
+        self.linear = nn.Linear(out_channels * seq_len, out_dim)
+
+    def forward(self, x):
+        # input x: b, seq_len, embed_dim
+        x = x.unsqueeze(1)  # b, c, seq_len, embed_dim
+        a = self.conv_0(x)
+        a = a + self.bias_0
+        b = self.conv_gate_0(x)
+        b = b + self.bias_gate_0
+        h = a * F.sigmoid(b)
+        res_input = h
+
+        for i, (conv, conv_gate) in enumerate(zip(self.conv, self.conv_gate)):
+            a = conv(h) + self.bias[i]
+            b = conv_gate(h) + self.bias_gate[i]
+            h = a * F.sigmoid(b)  # b, c, seq_len, 1
+            if (i + 1) % self.res_block_count == 0:  # size of each residual block
+                h += res_input
+                res_input = h
+
+        h = h.view(h.shape[0], -1)
+        out = self.linear(h)
+        out = F.relu(out, inplace=True)
+        return out
+
+
+class Generator(nn.Module):
+    def __init__(self, in_dim, seq_len, vocab_size):
+        super(Generator, self).__init__()
+        self.seq_len = seq_len
+        self.vocab_size = vocab_size
+        self.linear0 = nn.Linear(in_dim, in_dim * 2)
+        self.bn = nn.BatchNorm1d(in_dim * 2)
+        self.linear1 = nn.Linear(in_dim * 2, seq_len * vocab_size)
+
+    def forward(self, x):
+        x = self.linear0(x)
+        x = F.relu(x, inplace=True)
+        x = self.bn(x)
+        x = self.linear1(x).view(-1, self.seq_len, self.vocab_size)  # b, seq_len, emb_dim
+        x = F.gumbel_softmax(x, hard=True)
+        return x
+
+
+class Discriminator(nn.Module):
+    def __init__(self, seq_len, vocab_size, emb_dim, kernel_width=5,
+                 gcnn_layers=10, gcnn_channels=32, gcnn_blocks=5, gcnn_out_dim=10):
+        super(Discriminator, self).__init__()
+        self.embedding = nn.Linear(vocab_size, emb_dim)
+        self.gcnn = GatedCNN(
+            out_dim=gcnn_out_dim,
+            seq_len=seq_len,
+            kernel_shape=(kernel_width, emb_dim),
+            out_channels=gcnn_channels,
+            n_layers=gcnn_layers,
+            res_block_count=gcnn_blocks,
+        )
+        self.classification = nn.Linear(gcnn_out_dim, 1)
+        self.activation = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.gcnn(x)
+        x = self.classification(x)
+        x = self.activation(x)
+        return x
+
+
+class Gan(ModelMixin):
+    def __init__(self, vocab_path, in_dim=100, emb_dim=300, kernel_with=5,
+                 gcnn_layers=10, gcnn_channels=32, gcnn_blocks=5, gcnn_out_dim=10,
+                 device="cpu", stop_words=None, max_len=50):
+        super(Gan, self).__init__(stop_words=stop_words, max_len=max_len)
+        self.device = device
+        self.vocab_path = vocab_path
+        self.tokenizer = BertTokenizer.from_pretrained(vocab_path)
+        self.generator = Generator(in_dim=in_dim, seq_len=max_len, vocab_size=self.tokenizer.vocab_size)
+        self.discriminator = Discriminator(
+            seq_len=max_len, vocab_size=self.tokenizer.vocab_size, emb_dim=emb_dim, kernel_width=kernel_with,
+            gcnn_layers=gcnn_layers, gcnn_channels=gcnn_channels, gcnn_blocks=gcnn_blocks, gcnn_out_dim=gcnn_out_dim
+        )
+        self.config = {
+            "in_dim": in_dim, "emb_dim": emb_dim, "kernel_with": kernel_with,
+            "gcnn_layers": gcnn_layers, "gcnn_channels": gcnn_channels,
+            "gcnn_blocks": gcnn_blocks, "gcnn_out_dim": gcnn_out_dim,
+            "max_len": max_len
+        }
+
+    def calc_params(self):
+        return {
+            "Generator": sum(p.numel() for p in self.generator.parameters()),
+            "Discriminator": sum(p.numel() for p in self.discriminator.parameters())
+        }
+
+    @staticmethod
+    def from_pretrained(path, device="cpu", stop_words=None, sentence_length=50, *args, **kwargs):
+        config = json.load(open(f"{path}/config.json", "r"))
+        self = Gan(**config, vocab_path=f"{path}/vocab.txt")
+        self.device = device
+        ckpt = torch.load(f"{path}/model.bin")
+        self.generator.load_state_dict(ckpt["generator"])
+        self.discriminator.load_state_dict(ckpt["discriminator"])
+        return self
+
+    def save(self, path, *args, **kwargs):
+        if not os.path.exists(path):
+            os.mkdir(path)
+        copyfile(self.vocab_path, os.path.join(path, "vocab.txt"))
+        json.dump(self.config, open(f"{path}/config.json", "w"))
+        torch.save({
+            "generator": self.generator.state_dict(),
+            "discriminator": self.discriminator.state_dict(),
+        }, f"{path}/model.bin")
+
+    def preprocessing(self, sentences):
+        ids = list()
+        for text in sentences:
+            text_ids = self.tokenizer.encode(text, max_length=self.max_len, truncation='only_first')
+            text_ids = text_ids[1:-1]
+            text_ids = text_ids[:self.max_len] + [0] * (self.max_len - len(text_ids))
+            ids.append(text_ids)
+        ids = F.one_hot(torch.tensor(ids), num_classes=self.tokenizer.vocab_size).type(torch.FloatTensor)
+        return ids
+
+    def train(self, x, epoch=5, batch_size=8, lr_g=1e-3, lr_d=1e-3,
+              n_step_per_discriminator=1, n_step_per_generator=1, n_epoch_per_evaluate=1,
+              save_path=None, n_epoch_to_save=1, *args, **kwargs):
+
+        self.generator.to(self.device)
+        self.discriminator.to(self.device)
+        self.loss = nn.BCELoss().to(self.device)
+        self.optimizer_g = torch.optim.Adam(
+            params=self.generator.parameters(),
+            lr=lr_g,
+            betas=(0.5, 0.999)
+        )
+        self.optimizer_d = torch.optim.Adam(
+            params=self.discriminator.parameters(),
+            lr=lr_d,
+            betas=(0.5, 0.999)
+        )
+
+        for ep in range(epoch):
+            sum_time = 0
+            cnt_time = 0
+            d_loss, g_loss = None, None
+
+            self.generator.train()
+            self.discriminator.train()
+            for i, data in enumerate(x):
+                start_time = time.time()
+                # tokenize
+                data = self.preprocessing(data)
+
+                valid = torch.autograd.Variable(torch.ones(data.shape[0], 1), requires_grad=False).to(self.device)
+                fake = torch.autograd.Variable(torch.zeros(data.shape[0], 1), requires_grad=False).to(self.device)
+
+                real_data = data.to(self.device)
+
+                z = torch.normal(0, 1, (data.shape[0], self.config["in_dim"])).to(self.device)
+                gen_data = self.generator(z)
+
+                # -----------------
+                #  Train discriminator
+                # -----------------
+                if i % n_step_per_discriminator == 0:
+                    self.optimizer_d.zero_grad()  # 以前的梯度清空
+                    real_loss = self.loss(self.discriminator(real_data), valid)
+                    fake_loss = self.loss(self.discriminator(gen_data.detach()), fake)  # 不更新生成器
+                    d_loss = (real_loss + fake_loss) / 2
+
+                    d_loss.backward()  # 梯度下降
+                    self.optimizer_d.step()  # 更新优化器
+
+                # -----------------
+                #  Train Generator
+                # -----------------
+                if i % n_step_per_generator == 0:
+                    self.optimizer_g.zero_grad()
+                    g_loss = self.loss(self.discriminator(gen_data), valid)
+                    g_loss.backward()
+                    self.optimizer_g.step()
+
+                sum_time += time.time() - start_time
+                cnt_time += 1
+                print(
+                    f"\r[Epoch {ep + 1:03}/{epoch:03}]",
+                    f"Batch {i + 1:05}/{len(x):05} [{sum_time:.2f}s/{(sum_time / cnt_time) * len(x) - sum_time:.2f}s - {sum_time / cnt_time:.3f} s/it] ",
+                    f"D loss: {d_loss.item():.5f} G loss: {g_loss.item():.5f}",
+                    end=""
+                )
+            if d_loss is not None and g_loss is not None:
+                print(
+                    f"\r[Epoch {ep + 1}/{epoch}]",
+                    f"D loss {d_loss.item():5f} G loss {g_loss.item():5f}",
+                    f"Time {sum_time:.2f}s"
+                )
+
+            if (ep + 1) % n_epoch_per_evaluate == 0:
+                self.generator.eval()
+                self.discriminator.eval()
+                z = torch.normal(0, 1, (5, self.config["in_dim"])).to(self.device)
+                gen = self.generator(z)
+                score = self.discriminator(gen).detach().cpu().numpy()
+                ids = torch.argmax(gen, dim=-1).detach().cpu().numpy()
+                for i in range(5):
+                    print(score[i, 0], "".join(self.tokenizer.convert_ids_to_tokens(ids[i, :])))
+
+            if (ep + 1) % n_epoch_to_save == 0 and save_path is not None:
+                if not os.path.exists(save_path):
+                    os.mkdir(save_path)
+                self.save(os.path.join(save_path, f"epoch_{ep}"))
+
+    def score(self, x, temperature=1.0, verbose=False, *args, **kwargs):
+        self.discriminator.eval()
+        sentences = self.convert_inputs_to_sentences(x)
+        data = self.preprocessing(sentences).to(self.device)
+        scores = self.discriminator(data).detach().cpu().numpy()
+
+        probabilities = list()
+        for i in range(len(sentences)):
+            score = float(scores[i, 0])
+            probabilities += [score] * len(sentences[i])
+
+        l_score = 0
+        if len(probabilities) > 0:
+            l_score = sum([math.log(p, 2) for p in probabilities]) / len(probabilities)
+        if verbose:
+            for word, prob in zip(x, all_probabilities):
+                print(f"{word} | {prob:.8f}")
+            print(f"l score: {l_score:.8f}")
+        return l_score
